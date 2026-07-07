@@ -102,6 +102,7 @@ _parse_vless() {
         local sid=$(_get_param "$params" "sid")
         local fp=$(_get_param "$params" "fp")
         local type=$(_get_param "$params" "type")
+        local header_type=$(_get_param "$params" "headerType")
         local path=$(_get_param "$params" "path")
         local host=$(_get_param "$params" "host")
         local insecure=$(_get_param "$params" "insecure")
@@ -117,6 +118,12 @@ _parse_vless() {
             '{type:$type, tag:$tag, server:$server, server_port:$port, uuid:$uuid, flow:$flow}')
 
         [ "$type" == "ws" ] && outbound=$(echo "$outbound" | jq --arg path "${path:-"/"}" --arg host "$host" '.transport = {type:"ws", path:$path, headers:{Host:$host}}')
+        if [ "$type" == "tcp" ] && [ "$header_type" == "http" ]; then
+            outbound=$(echo "$outbound" | jq --arg path "${path:-"/"}" --arg host "$host" '
+                .transport = {type:"http", path:$path}
+                | if $host != "" then .transport.headers = {Host:$host} else . end
+            ')
+        fi
         
         local target_sni="${sni:-$host}"
         target_sni="${target_sni:-$server}"

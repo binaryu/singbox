@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 基础路径定义
-export SCRIPT_VERSION="20"
+export SCRIPT_VERSION="21"
 export DEFAULT_SNI="www.amd.com"
 export WS_EARLY_DATA_SIZE="2560"
 export WS_EARLY_DATA_HEADER="Sec-WebSocket-Protocol"
@@ -2562,6 +2562,11 @@ _show_node_link() {
             local uuid="$1"
             url="vless://${uuid}@${link_ip}:${port}?encryption=none&type=tcp#$(_url_encode "$name")"
             ;;
+        "vless-tcp-http")
+            # 参数: uuid, path
+            local uuid="$1" http_path="${2:-/}"
+            url="vless://${uuid}@${link_ip}:${port}?encryption=none&type=tcp&headerType=http&path=$(_url_encode "$http_path")#$(_url_encode "$name")"
+            ;;
         "trojan-ws-tls")
             # 参数: password, sni, ws_path, skip_verify
             local password="$1" sni="${2:-$DEFAULT_SNI}" ws_path="$3" skip_verify="$4" cert_path="$5"
@@ -3605,6 +3610,8 @@ _add_vless_tcp() {
     local node_ip="${server_ip}"
     [[ "$BATCH_MODE" == "true" && -n "$BATCH_IP" ]] && node_ip="$BATCH_IP"
     local port=""
+    local use_http_camouflage="true"
+    local http_path="/"
     if [ "$BATCH_MODE" = "true" ]; then
         port="$BATCH_PORT"
         if [ -z "$port" ]; then
@@ -3620,6 +3627,17 @@ _add_vless_tcp() {
             _check_port_conflict "$port" "tcp" && continue
             break
         done
+        read -p "是否开启 HTTP 伪装? (Y/n，Host 留空由客户端填写): " http_camouflage_choice
+        case "${http_camouflage_choice:-Y}" in
+            n|N|no|NO|No)
+                use_http_camouflage="false"
+                ;;
+            *)
+                read -p "请输入 HTTP 伪装路径 (默认: /): " input_http_path
+                http_path=${input_http_path:-/}
+                [[ "$http_path" != /* ]] && http_path="/${http_path}"
+                ;;
+        esac
     fi
     # [!] 自定义名称 (批量模式下自动分配)
     local default_name="VLESS-TCP-${port}"
@@ -3637,15 +3655,33 @@ _add_vless_tcp() {
     local yaml_ip="$node_ip"
     local link_ip="$node_ip"; [[ "$node_ip" == *":"* ]] && link_ip="[$node_ip]"
     
-    local inbound_json=$(jq -n --arg t "$tag" --arg p "$port" --arg u "$uuid" \
-        '{"type":"vless","tag":$t,"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u,"flow":""}],"tls":{"enabled":false}}')
+    local inbound_json
+    if [ "$use_http_camouflage" = "true" ]; then
+        inbound_json=$(jq -n --arg t "$tag" --arg p "$port" --arg u "$uuid" --arg path "$http_path" \
+            '{"type":"vless","tag":$t,"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u,"flow":""}],"tls":{"enabled":false},"transport":{"type":"http","path":$path}}')
+    else
+        inbound_json=$(jq -n --arg t "$tag" --arg p "$port" --arg u "$uuid" \
+            '{"type":"vless","tag":$t,"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u,"flow":""}],"tls":{"enabled":false}}')
+    fi
     _atomic_modify_json "$CONFIG_FILE" ".inbounds += [$inbound_json] | .inbounds |= unique_by(.tag)" || return 1
     
-    local proxy_json=$(jq -n --arg n "$name" --arg s "$yaml_ip" --arg p "$port" --arg u "$uuid" \
-        '{"name":$n,"type":"vless","server":$s,"port":($p|tonumber),"uuid":$u,"tls":false,"network":"tcp"}')
+    local proxy_json
+    if [ "$use_http_camouflage" = "true" ]; then
+        proxy_json=$(jq -n --arg n "$name" --arg s "$yaml_ip" --arg p "$port" --arg u "$uuid" --arg path "$http_path" \
+            '{"name":$n,"type":"vless","server":$s,"port":($p|tonumber),"uuid":$u,"tls":false,"network":"http","http-opts":{"method":"GET","path":[$path]}}')
+    else
+        proxy_json=$(jq -n --arg n "$name" --arg s "$yaml_ip" --arg p "$port" --arg u "$uuid" \
+            '{"name":$n,"type":"vless","server":$s,"port":($p|tonumber),"uuid":$u,"tls":false,"network":"tcp"}')
+    fi
     _add_node_to_yaml "$proxy_json"
-    _success "VLESS (TCP) 节点 [${name}] 添加成功!"
-    _show_node_link "vless-tcp" "$name" "$link_ip" "$port" "$tag" "$uuid"
+    if [ "$use_http_camouflage" = "true" ]; then
+        _success "VLESS (TCP + HTTP伪装) 节点 [${name}] 添加成功!"
+        _info "HTTP 伪装 Host 未固定，客户端可自行填写。"
+        _show_node_link "vless-tcp-http" "$name" "$link_ip" "$port" "$tag" "$uuid" "$http_path"
+    else
+        _success "VLESS (TCP) 节点 [${name}] 添加成功!"
+        _show_node_link "vless-tcp" "$name" "$link_ip" "$port" "$tag" "$uuid"
+    fi
 }
 
 _add_hysteria2() {
@@ -4257,6 +4293,10 @@ _view_nodes() {
                         [ -n "$cert_pcs" ] && insecure_param="${insecure_param}&pcs=${cert_pcs}"
                     fi
                     url="vless://${uuid}@${link_ip}:${port}?security=tls&encryption=none&type=grpc&serviceName=$(_url_encode "$svc")&sni=${sn}${insecure_param}#$(_url_encode "$display_name")"
+                elif [ "$transport_type" == "http" ]; then
+                    local http_path="$ws_path"
+                    [ -z "$http_path" ] || [ "$http_path" == "null" ] && http_path="/"
+                    url="vless://${uuid}@${link_ip}:${port}?encryption=none&type=tcp&headerType=http&path=$(_url_encode "$http_path")#$(_url_encode "$display_name")"
                 elif [ "$tls_enabled" == "true" ]; then
                     local sn="$tls_sn"
                     url="vless://${uuid}@${link_ip}:${port}?security=tls&encryption=none&type=tcp&sni=${sn}#$(_url_encode "$display_name")"
@@ -5863,7 +5903,7 @@ _show_add_node_menu() {
     echo -e "    ${GREEN}[6]${NC} Hysteria2"
     echo -e "    ${GREEN}[7]${NC} TUICv5"
     echo -e "    ${GREEN}[8]${NC} Shadowsocks"
-    echo -e "    ${GREEN}[9]${NC} VLESS (TCP)"
+    echo -e "    ${GREEN}[9]${NC} VLESS (TCP/HTTP伪装)"
     echo -e "    ${GREEN}[10]${NC} SOCKS5"
     echo ""
     
