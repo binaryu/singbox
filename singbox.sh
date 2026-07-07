@@ -1,14 +1,23 @@
 #!/bin/bash
 
 # 基础路径定义
-export SCRIPT_VERSION="19"
+export SCRIPT_VERSION="20"
 export DEFAULT_SNI="www.amd.com"
 export WS_EARLY_DATA_SIZE="2560"
 export WS_EARLY_DATA_HEADER="Sec-WebSocket-Protocol"
-SELF_SCRIPT_PATH="$(readlink -f "$0")"
+SINGBOX_INSTALL_BIN="${SINGBOX_INSTALL_BIN:-/usr/local/bin/sb}"
+ORIGINAL_SELF_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+RUNNING_FROM_PIPE=false
+case "$(basename "$0")" in bash|sh|dash|ash) RUNNING_FROM_PIPE=true ;; esac
+case "$ORIGINAL_SELF_PATH" in /dev/fd/*|/proc/*/fd/*) RUNNING_FROM_PIPE=true ;; esac
+if [ "$RUNNING_FROM_PIPE" = true ]; then
+    SELF_SCRIPT_PATH="$SINGBOX_INSTALL_BIN"
+else
+    SELF_SCRIPT_PATH="$ORIGINAL_SELF_PATH"
+fi
 SCRIPT_DIR="$(dirname "$SELF_SCRIPT_PATH")"
 SINGBOX_DIR="/usr/local/etc/sing-box"
-GITHUB_RAW_BASE="https://raw.githubusercontent.com/0xdabiaoge/singbox-lite/main"
+GITHUB_RAW_BASE="https://raw.githubusercontent.com/binaryu/singbox/main"
 SCRIPT_UPDATE_URL="${GITHUB_RAW_BASE}/singbox.sh"
 
 # 注入 sing-box 1.12+ 废弃配置兼容环境变量 (用于脚本内嵌的前台命令调用，如 check/generate)
@@ -56,23 +65,52 @@ _download_file() {
     local output="$1"
     local url="$2"
     local download_url="$(_proxy_download_url "$url")"
-    wget -qO "$output" "$download_url" && return 0
-    [ "$download_url" != "$url" ] && wget -qO "$output" "$url"
+    if command -v wget >/dev/null 2>&1; then
+        wget -qO "$output" "$download_url" && return 0
+    elif command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "$output" "$download_url" && return 0
+    fi
+    if [ "$download_url" != "$url" ]; then
+        if command -v wget >/dev/null 2>&1; then
+            wget -qO "$output" "$url" && return 0
+        elif command -v curl >/dev/null 2>&1; then
+            curl -fsSL -o "$output" "$url" && return 0
+        fi
+    fi
+    return 1
 }
 
 _fetch_url() {
     local url="$1"
     local download_url="$(_proxy_download_url "$url")"
-    curl -fsSL "$download_url" && return 0
-    [ "$download_url" != "$url" ] && curl -fsSL "$url"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$download_url" && return 0
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO - "$download_url" && return 0
+    fi
+    if [ "$download_url" != "$url" ]; then
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "$url" && return 0
+        elif command -v wget >/dev/null 2>&1; then
+            wget -qO - "$url" && return 0
+        fi
+    fi
+    return 1
 }
 
 _prompt_github_proxy() {
+    [ "${SINGBOX_GITHUB_PROXY_PROMPTED:-}" = "1" ] && return 0
     [ -n "${SINGBOX_GITHUB_PROXY:-}" ] && {
         _info "GitHub 下载代理已启用: ${SINGBOX_GITHUB_PROXY}"
+        export SINGBOX_GITHUB_PROXY_PROMPTED=1
         return 0
     }
-    [ -t 0 ] || return 0
+    local input_device="/dev/stdin"
+    if [ -r /dev/tty ]; then
+        input_device="/dev/tty"
+    elif ! [ -t 0 ]; then
+        return 0
+    fi
 
     echo ""
     echo -e "${CYAN}GitHub 下载代理${NC}"
@@ -85,7 +123,8 @@ _prompt_github_proxy() {
     echo ""
 
     local choice custom_proxy
-    read -p "请选择 [1-5] (默认: 1): " choice
+    read -r -p "请选择 [1-5] (默认: 1): " choice < "$input_device"
+    export SINGBOX_GITHUB_PROXY_PROMPTED=1
     case "${choice:-1}" in
         2)
             export SINGBOX_GITHUB_PROXY="https://ghfast.top/"
@@ -97,7 +136,7 @@ _prompt_github_proxy() {
             export SINGBOX_GITHUB_PROXY="https://gh-proxy.com/"
             ;;
         5)
-            read -p "请输入代理前缀 (例如 https://ghfast.top/): " custom_proxy
+            read -r -p "请输入代理前缀 (例如 https://ghfast.top/): " custom_proxy < "$input_device"
             custom_proxy="${custom_proxy//[[:space:]]/}"
             if [ -n "$custom_proxy" ]; then
                 export SINGBOX_GITHUB_PROXY="$custom_proxy"
@@ -110,6 +149,53 @@ _prompt_github_proxy() {
     esac
 
     [ -n "${SINGBOX_GITHUB_PROXY:-}" ] && _success "GitHub 下载代理已启用: $(_download_proxy_prefix)"
+}
+
+_ensure_self_installed() {
+    [ "$RUNNING_FROM_PIPE" = true ] || return 0
+
+    local install_path="${SINGBOX_INSTALL_BIN:-/usr/local/bin/sb}"
+    local install_dir
+    local tmp_path
+    install_dir="$(dirname "$install_path")"
+    tmp_path="${install_path}.tmp.$$"
+
+    _info "正在安装快捷命令: ${install_path}"
+    mkdir -p "$install_dir" || {
+        _error "创建安装目录失败: ${install_dir}"
+        return 1
+    }
+
+    if ! _download_file "$tmp_path" "$SCRIPT_UPDATE_URL"; then
+        _error "脚本下载失败，无法安装快捷命令。"
+        rm -f "$tmp_path"
+        return 1
+    fi
+
+    if [ ! -s "$tmp_path" ]; then
+        _error "脚本下载失败或文件为空。"
+        rm -f "$tmp_path"
+        return 1
+    fi
+
+    chmod +x "$tmp_path" || {
+        _error "设置脚本执行权限失败: ${tmp_path}"
+        rm -f "$tmp_path"
+        return 1
+    }
+
+    mv -f "$tmp_path" "$install_path" || {
+        _error "安装快捷命令失败: ${install_path}"
+        rm -f "$tmp_path"
+        return 1
+    }
+
+    _success "快捷命令安装成功: ${install_path}"
+    if [ -r /dev/tty ]; then
+        exec "$install_path" < /dev/tty
+    else
+        exec "$install_path"
+    fi
 }
 
 # 检查 root 权限
@@ -5829,6 +5915,7 @@ main() {
     _check_root
     _detect_init_system
     _prompt_github_proxy
+    _ensure_self_installed
     
     # 强制预创建目录，防止后续 cp/mv 因路径不存在报错 (保底机制)
     mkdir -p "${SINGBOX_DIR}" 2>/dev/null

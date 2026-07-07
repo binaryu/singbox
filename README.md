@@ -86,15 +86,15 @@
 进入交互菜单手动配置节点：
 
 ```
-(curl -LfsS https://raw.githubusercontent.com/binaryu/singbox/main/singbox.sh -o /usr/local/bin/sb || wget -q https://raw.githubusercontent.com/binaryu/singbox/main/singbox.sh -O /usr/local/bin/sb) && chmod +x /usr/local/bin/sb && sb
+curl -fsSL https://raw.githubusercontent.com/binaryu/singbox/main/singbox.sh | bash
 ```
 
-中国大陆网络环境的 VPS 运行脚本后会提示是否启用 GitHub 下载代理，可直接选择内置代理前缀。
+脚本会自动安装快捷命令 `sb` 到 `/usr/local/bin/sb` 并进入交互菜单。中国大陆网络环境的 VPS 运行脚本后会提示是否启用 GitHub 下载代理，可直接选择内置代理前缀。
 
 首次安装时也可以直接使用代理下载脚本：
 
 ```
-(curl -LfsS https://ghfast.top/https://raw.githubusercontent.com/binaryu/singbox/main/singbox.sh -o /usr/local/bin/sb || wget -q https://ghfast.top/https://raw.githubusercontent.com/binaryu/singbox/main/singbox.sh -O /usr/local/bin/sb) && chmod +x /usr/local/bin/sb && SINGBOX_GITHUB_PROXY=https://ghfast.top/ sb
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/binaryu/singbox/main/singbox.sh | SINGBOX_GITHUB_PROXY=https://ghfast.top/ bash
 ```
 
 也可通过参数指定代理，跳过启动询问：
