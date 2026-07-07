@@ -38,6 +38,39 @@ if ! declare -f _info >/dev/null; then
     _warn() { echo -e "${YELLOW}[注意] $1${NC}" >&2; }
 fi
 
+if ! declare -f _download_proxy_prefix >/dev/null 2>&1; then
+    _download_proxy_prefix() {
+        local proxy="${SINGBOX_GITHUB_PROXY:-${GITHUB_PROXY:-${GH_PROXY:-}}}"
+        proxy="${proxy//[[:space:]]/}"
+        [ -n "$proxy" ] || return 0
+        [[ "$proxy" == http://* || "$proxy" == https://* ]] || proxy="https://${proxy}"
+        [[ "$proxy" == */ ]] || proxy="${proxy}/"
+        printf '%s' "$proxy"
+    }
+fi
+
+if ! declare -f _proxy_download_url >/dev/null 2>&1; then
+    _proxy_download_url() {
+        local url="$1"
+        local proxy="$(_download_proxy_prefix)"
+        if [ -z "$proxy" ] || [[ "$url" != http://* && "$url" != https://* ]] || [[ "$url" == "$proxy"* ]]; then
+            printf '%s' "$url"
+        else
+            printf '%s%s' "$proxy" "$url"
+        fi
+    }
+fi
+
+if ! declare -f _download_file >/dev/null 2>&1; then
+    _download_file() {
+        local output="$1"
+        local url="$2"
+        local download_url="$(_proxy_download_url "$url")"
+        wget -qO "$output" "$download_url" && return 0
+        [ "$download_url" != "$url" ] && wget -qO "$output" "$url"
+    }
+fi
+
 # --- 全局变量 ---
 # 工具路径
 YQ_BINARY="/usr/local/bin/yq"
@@ -55,7 +88,7 @@ _install_yq() {
         _info "安装 yq..."
         local arch=$(uname -m)
         case $arch in x86_64|amd64) arch='amd64' ;; aarch64|arm64) arch='arm64' ;; *) arch='amd64' ;; esac
-        wget -qO "$YQ_BINARY" "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_$arch"
+        _download_file "$YQ_BINARY" "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_$arch"
         chmod +x "$YQ_BINARY"
     fi
 }
@@ -450,7 +483,8 @@ _check_parser() {
     else
         _info "正在下载解析脚本 (${PARSER_NAME})..."
         local PARSER_URL="${GITHUB_RAW_BASE}/${PARSER_NAME}"
-        if ! timeout 10 wget -qO "$prod_parser" "$PARSER_URL"; then
+        local parser_download_url="$(_proxy_download_url "$PARSER_URL")"
+        if ! timeout 10 wget -qO "$prod_parser" "$parser_download_url" && { [ "$parser_download_url" = "$PARSER_URL" ] || ! timeout 10 wget -qO "$prod_parser" "$PARSER_URL"; }; then
              _error "解析脚本下载失败，请检查网络！"
              return 1
         fi

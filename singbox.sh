@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 基础路径定义
-export SCRIPT_VERSION="17"
+export SCRIPT_VERSION="19"
 export DEFAULT_SNI="www.amd.com"
 export WS_EARLY_DATA_SIZE="2560"
 export WS_EARLY_DATA_HEADER="Sec-WebSocket-Protocol"
@@ -32,6 +32,85 @@ _success() { echo -e "${GREEN}[成功] $1${NC}" >&2; }
 _warn() { echo -e "${YELLOW}[注意] $1${NC}" >&2; }
 _warning() { _warn "$1"; } # 别名兼容
 _error() { echo -e "${RED}[错误] $1${NC}" >&2; }
+
+_download_proxy_prefix() {
+    local proxy="${SINGBOX_GITHUB_PROXY:-${GITHUB_PROXY:-${GH_PROXY:-}}}"
+    proxy="${proxy//[[:space:]]/}"
+    [ -n "$proxy" ] || return 0
+    [[ "$proxy" == http://* || "$proxy" == https://* ]] || proxy="https://${proxy}"
+    [[ "$proxy" == */ ]] || proxy="${proxy}/"
+    printf '%s' "$proxy"
+}
+
+_proxy_download_url() {
+    local url="$1"
+    local proxy="$(_download_proxy_prefix)"
+    if [ -z "$proxy" ] || [[ "$url" != http://* && "$url" != https://* ]] || [[ "$url" == "$proxy"* ]]; then
+        printf '%s' "$url"
+    else
+        printf '%s%s' "$proxy" "$url"
+    fi
+}
+
+_download_file() {
+    local output="$1"
+    local url="$2"
+    local download_url="$(_proxy_download_url "$url")"
+    wget -qO "$output" "$download_url" && return 0
+    [ "$download_url" != "$url" ] && wget -qO "$output" "$url"
+}
+
+_fetch_url() {
+    local url="$1"
+    local download_url="$(_proxy_download_url "$url")"
+    curl -fsSL "$download_url" && return 0
+    [ "$download_url" != "$url" ] && curl -fsSL "$url"
+}
+
+_prompt_github_proxy() {
+    [ -n "${SINGBOX_GITHUB_PROXY:-}" ] && {
+        _info "GitHub 下载代理已启用: ${SINGBOX_GITHUB_PROXY}"
+        return 0
+    }
+    [ -t 0 ] || return 0
+
+    echo ""
+    echo -e "${CYAN}GitHub 下载代理${NC}"
+    echo "中国大陆网络环境的 VPS 建议启用代理，可提高 GitHub 下载成功率。"
+    echo "  [1] 不使用代理"
+    echo "  [2] 使用 ghfast.top"
+    echo "  [3] 使用 ghproxy.net"
+    echo "  [4] 使用 gh-proxy.com"
+    echo "  [5] 自定义代理前缀"
+    echo ""
+
+    local choice custom_proxy
+    read -p "请选择 [1-5] (默认: 1): " choice
+    case "${choice:-1}" in
+        2)
+            export SINGBOX_GITHUB_PROXY="https://ghfast.top/"
+            ;;
+        3)
+            export SINGBOX_GITHUB_PROXY="https://ghproxy.net/"
+            ;;
+        4)
+            export SINGBOX_GITHUB_PROXY="https://gh-proxy.com/"
+            ;;
+        5)
+            read -p "请输入代理前缀 (例如 https://ghfast.top/): " custom_proxy
+            custom_proxy="${custom_proxy//[[:space:]]/}"
+            if [ -n "$custom_proxy" ]; then
+                export SINGBOX_GITHUB_PROXY="$custom_proxy"
+            else
+                _warn "未输入代理前缀，将不使用代理。"
+            fi
+            ;;
+        *)
+            ;;
+    esac
+
+    [ -n "${SINGBOX_GITHUB_PROXY:-}" ] && _success "GitHub 下载代理已启用: $(_download_proxy_prefix)"
+}
 
 # 检查 root 权限
 _check_root() {
@@ -600,7 +679,7 @@ _install_yq() {
         _info "安装 yq..."
         local arch=$(uname -m)
         case $arch in x86_64|amd64) arch='amd64' ;; aarch64|arm64) arch='arm64' ;; *) arch='amd64' ;; esac
-        wget -qO "$YQ_BINARY" "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_$arch"
+        _download_file "$YQ_BINARY" "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_$arch"
         chmod +x "$YQ_BINARY"
     fi
 }
@@ -626,7 +705,7 @@ case "$INIT_SYSTEM" in
     *) export SERVICE_FILE="" ;;
 esac
 
-export -f _info _success _warn _warning _error _url_encode _url_decode _ws_path_with_early_data _cert_sha256_hex _tls_insecure_params _get_public_ip _detect_init_system _sync_system_time _release_install_cache _atomic_modify_json _atomic_modify_yaml _manage_service _pkg_install _get_proxy_field _add_node_to_yaml _remove_node_from_yaml _find_proxy_name _nft_ensure_base _nft_delete_rules_by_comment _nft_port_expr _nft_apply_redirect_rule _nft_can_redirect _save_nftables_rules _remove_nftables_rules
+export -f _info _success _warn _warning _error _url_encode _url_decode _download_proxy_prefix _proxy_download_url _download_file _fetch_url _ws_path_with_early_data _cert_sha256_hex _tls_insecure_params _get_public_ip _detect_init_system _sync_system_time _release_install_cache _atomic_modify_json _atomic_modify_yaml _manage_service _pkg_install _get_proxy_field _add_node_to_yaml _remove_node_from_yaml _find_proxy_name _nft_ensure_base _nft_delete_rules_by_comment _nft_port_expr _nft_apply_redirect_rule _nft_can_redirect _save_nftables_rules _remove_nftables_rules
 
 server_ip=""
 BATCH_MODE=false
@@ -749,7 +828,7 @@ _install_sing_box() {
     
     local api_url="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
     local search_pattern="linux-${arch_tag}${libc_suffix}.tar.gz"
-    local release_info=$(curl -s "$api_url")
+    local release_info=$(_fetch_url "$api_url")
     local download_url=$(echo "$release_info" | jq -r ".assets[] | select(.name | contains(\"${search_pattern}\")) | .browser_download_url" | head -1)
 
     if [ -z "$download_url" ]; then _error "无法获取 sing-box 下载链接 (搜索: ${search_pattern})。"; return 1; fi
@@ -758,7 +837,7 @@ _install_sing_box() {
     archive_path="${temp_dir}/sing-box.tar.gz"
 
     _info "正在下载 sing-box 安装包..."
-    if ! wget -qO "$archive_path" "$download_url"; then
+    if ! _download_file "$archive_path" "$download_url"; then
         _error "下载失败: $download_url"
         rm -rf "$temp_dir"
         return 1
@@ -820,7 +899,7 @@ _install_cloudflared() {
     
     local download_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch_tag}"
     
-    wget -qO "${CLOUDFLARED_BIN}" "$download_url" || { _error "cloudflared 下载失败!"; return 1; }
+    _download_file "${CLOUDFLARED_BIN}" "$download_url" || { _error "cloudflared 下载失败!"; return 1; }
     chmod +x "${CLOUDFLARED_BIN}"
     
     _success "cloudflared 安装成功: $(${CLOUDFLARED_BIN} --version 2>&1 | head -n1)"
@@ -4742,7 +4821,7 @@ _update_script() {
     _info "正在从 GitHub 下载最新版本..."
     local temp_script_path="${SELF_SCRIPT_PATH}.tmp"
     
-    if wget -qO "$temp_script_path" "$SCRIPT_UPDATE_URL"; then
+    if _download_file "$temp_script_path" "$SCRIPT_UPDATE_URL"; then
         if [ ! -s "$temp_script_path" ]; then
             _error "主脚本下载失败或文件为空！"
             rm -f "$temp_script_path"
@@ -4772,7 +4851,7 @@ _update_script() {
                 local temp_sub_path="${script_path}.tmp"
                 
                 _info "正在更新子脚本: ${script_name} -> ${script_path}..."
-                if wget -qO "$temp_sub_path" "$script_url"; then
+                if _download_file "$temp_sub_path" "$script_url"; then
                     if [ -s "$temp_sub_path" ]; then
                         chmod +x "$temp_sub_path"
                         mv "$temp_sub_path" "$script_path"
@@ -4883,7 +4962,7 @@ _do_update_xray() {
     local tmp_zip="${tmp_dir}/xray.zip"
     
     _info "下载地址: ${download_url}"
-    if ! wget -qO "$tmp_zip" "$download_url"; then
+    if ! _download_file "$tmp_zip" "$download_url"; then
         _error "Xray 下载失败！"
         rm -rf "$tmp_dir"
         return 1
@@ -5009,7 +5088,7 @@ _advanced_features() {
         _info "本地未检测到进阶脚本，正在尝试下载..."
         local download_url="${GITHUB_RAW_BASE}/${script_name}"
         
-        if wget -qO "$script_path" "$download_url"; then
+        if _download_file "$script_path" "$download_url"; then
             chmod +x "$script_path"
             _success "下载成功！"
         else
@@ -5048,7 +5127,7 @@ _xray_features() {
     if [ ! -f "$script_path" ]; then
         _info "本地未检测到 Xray 管理脚本，正在尝试下载..."
         local download_url="${GITHUB_RAW_BASE}/${script_name}"
-        if wget -qO "$script_path" "$download_url"; then
+        if _download_file "$script_path" "$download_url"; then
             chmod +x "$script_path"
             _success "下载成功！"
         else
@@ -5749,6 +5828,7 @@ _show_add_node_menu() {
 main() {
     _check_root
     _detect_init_system
+    _prompt_github_proxy
     
     # 强制预创建目录，防止后续 cp/mv 因路径不存在报错 (保底机制)
     mkdir -p "${SINGBOX_DIR}" 2>/dev/null
@@ -5831,6 +5911,18 @@ main() {
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --github-proxy)
+            if [ -z "${2:-}" ]; then
+                _error "--github-proxy 需要提供代理前缀，例如：https://ghfast.top/"
+                exit 1
+            fi
+            export SINGBOX_GITHUB_PROXY="$2"
+            shift 2
+            ;;
+        --github-proxy=*)
+            export SINGBOX_GITHUB_PROXY="${1#*=}"
+            shift
+            ;;
         keepalive)
             _argo_keepalive
             exit 0

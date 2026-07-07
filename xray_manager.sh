@@ -40,6 +40,39 @@ if ! declare -f _url_encode >/dev/null 2>&1; then
     }
 fi
 
+if ! declare -f _download_proxy_prefix >/dev/null 2>&1; then
+    _download_proxy_prefix() {
+        local proxy="${SINGBOX_GITHUB_PROXY:-${GITHUB_PROXY:-${GH_PROXY:-}}}"
+        proxy="${proxy//[[:space:]]/}"
+        [ -n "$proxy" ] || return 0
+        [[ "$proxy" == http://* || "$proxy" == https://* ]] || proxy="https://${proxy}"
+        [[ "$proxy" == */ ]] || proxy="${proxy}/"
+        printf '%s' "$proxy"
+    }
+fi
+
+if ! declare -f _proxy_download_url >/dev/null 2>&1; then
+    _proxy_download_url() {
+        local url="$1"
+        local proxy="$(_download_proxy_prefix)"
+        if [ -z "$proxy" ] || [[ "$url" != http://* && "$url" != https://* ]] || [[ "$url" == "$proxy"* ]]; then
+            printf '%s' "$url"
+        else
+            printf '%s%s' "$proxy" "$url"
+        fi
+    }
+fi
+
+if ! declare -f _download_file >/dev/null 2>&1; then
+    _download_file() {
+        local output="$1"
+        local url="$2"
+        local download_url="$(_proxy_download_url "$url")"
+        wget -qO "$output" "$download_url" && return 0
+        [ "$download_url" != "$url" ] && wget -qO "$output" "$url"
+    }
+fi
+
 if ! declare -f _cert_sha256_hex >/dev/null 2>&1; then
     _cert_sha256_hex() {
         local cert_path="$1"
@@ -272,7 +305,7 @@ _install_xray() {
     local tmp_zip="${tmp_dir}/xray.zip"
     
     _info "下载地址: ${download_url}"
-    if ! wget -qO "$tmp_zip" "$download_url"; then
+    if ! _download_file "$tmp_zip" "$download_url"; then
         _error "Xray 下载失败！"
         rm -rf "$tmp_dir"
         return 1
